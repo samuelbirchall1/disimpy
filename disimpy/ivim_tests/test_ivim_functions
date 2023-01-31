@@ -67,12 +67,12 @@ def test_get_nearest_velocity_direction():
 
     stream = cuda.stream()
 
-    mesh = meshio.read("vascular_mesh_22-10-04_21-52-57_r4.ply")
+    mesh = meshio.read("/content/drive/MyDrive/mresprojectbits/vascular_mesh_22-10-04_21-52-57_r4.ply")
     vertices = mesh.points.astype(np.float32)
     faces = mesh.cells[0].data
 
-    vdir = np.load("velocity_direction.npy")
-    vloc = np.load("velocity_location.npy")
+    vdir = np.load("/content/drive/MyDrive/mresprojectbits/velocity_direction.npy")
+    vloc = np.load("/content/drive/MyDrive/mresprojectbits/velocity_location.npy")
     padding=np.zeros(3)
     shift = -np.min(vertices, axis=0) + padding
     vdir = vdir + shift
