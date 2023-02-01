@@ -16,10 +16,8 @@ from numba.cuda.random import (
     xoroshiro128p_uniform_float64,
 )
 
-import utils, substrates
-from gradients import GAMMA
-#from . import utils, substrates
-#from .gradients import GAMMA
+from . import utils, substrates
+from .gradients import GAMMA
 
 
 @cuda.jit(device=True)
