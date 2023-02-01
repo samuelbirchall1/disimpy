@@ -7,7 +7,8 @@ gradient magnitude in SI units (T/m).
 
 import numpy as np
 
-from . import utils
+import utils
+#from . import utils
 
 
 GAMMA = 267.513e6  # Gyromagnetic ratio of the simulated spins
