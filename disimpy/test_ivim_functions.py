@@ -38,7 +38,7 @@ def get_variables(
     shift = -np.min(original_mesh_vertices, axis=0) + padding
     vdir = vdir + shift
     vloc = vloc + shift 
-    vdir = np.linalg.norm(vdir, axis=1)
+    mag = np.linalg.norm(vdir, axis=1)
     mag = mag[:, np.newaxis]
     vdir = np.divide(vdir, mag)
 
@@ -77,7 +77,7 @@ def test_get_nearest_velocity_direction():
     shift = -np.min(vertices, axis=0) + padding
     vdir = vdir + shift
     vloc = vloc + shift 
-    vdir = np.linalg.norm(vdir, axis=1)
+    mag = np.linalg.norm(vdir, axis=1)
     mag = mag[:, np.newaxis]
     vdir = np.divide(vdir, mag)
 
