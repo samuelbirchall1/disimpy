@@ -21,6 +21,7 @@ from gradients import GAMMA
 #from . import utils, substrates
 #from .gradients import GAMMA
 
+FLOW_STEP = 1e-5
 
 @cuda.jit(device=True)
 def _cuda_dot_product(a, b):
@@ -843,6 +844,184 @@ def _cuda_step_ellipsoid(
             )
         )
     return
+
+
+@cuda.jit()
+def _cuda_flow_mesh(
+    positions, 
+    step_l,
+    vertices,
+    faces,
+    xs,
+    ys,
+    zs,
+    subvoxel_indices,
+    triangle_indices,
+    iter_exc,
+    max_iter,
+    n_sv,
+    epsilon,
+    vdir,
+):
+    
+    """
+    Kernel Function for flow in vascular mesh
+    """
+
+    thread_id = cuda.grid(1)
+    if thread_id >= positions.shape[0]:
+        return 
+    step = cuda.local.array(3, numba.float64)
+    lls = cuda.local.array(3, numba.int64)
+    uls = cuda.local.array(3, numba.int64)
+    triangle = cuda.local.array((3, 3), numba.float64)
+    normal = cuda.local.array(3, numba.float64)
+    shifts = cuda.local.array(3, numba.float64)
+    temp_r0 = cuda.local.array(3, numba.float64)
+
+    r0 = positions[thread_id, :]
+    step = vdir[thread_id, :]
+    # Check for intersection, reflect step, and repeat until no intersection
+    check_intersection = True
+    iter_idx = 0
+    while check_intersection and step_l > 0 and iter_idx < max_iter:
+        iter_idx += 1
+        min_d = math.inf
+
+        # Find the relevant subvoxels for this step
+        lls[0] = _ll_subvoxel_overlap_periodic(xs, r0[0], r0[0] + step[0] * step_l)
+        lls[1] = _ll_subvoxel_overlap_periodic(ys, r0[1], r0[1] + step[1] * step_l)
+        lls[2] = _ll_subvoxel_overlap_periodic(zs, r0[2], r0[2] + step[2] * step_l)
+        uls[0] = _ul_subvoxel_overlap_periodic(xs, r0[0], r0[0] + step[0] * step_l)
+        uls[1] = _ul_subvoxel_overlap_periodic(ys, r0[1], r0[1] + step[1] * step_l)
+        uls[2] = _ul_subvoxel_overlap_periodic(zs, r0[2], r0[2] + step[2] * step_l)
+
+        # Loop over subvoxels and fnd the closest triangle
+        for x in range(lls[0], uls[0]):
+
+            # Check if subvoxel is outside the simulated voxel
+            if x < 0 or x > len(xs) - 2:
+                shift_n = math.floor(x / (len(xs) - 1))
+                x -= shift_n * (len(xs) - 1)
+                shifts[0] = shift_n * xs[-1]
+            else:
+                shifts[0] = 0
+
+            for y in range(lls[1], uls[1]):
+
+                # Check if subvoxel is outside the simulated voxel
+                if y < 0 or y > len(ys) - 2:
+                    shift_n = math.floor(y / (len(ys) - 1))
+                    y -= shift_n * (len(ys) - 1)
+                    shifts[1] = shift_n * ys[-1]
+                else:
+                    shifts[1] = 0
+
+                for z in range(lls[2], uls[2]):
+
+                    # Check if subvoxel is outside the simulated voxel
+                    if z < 0 or z > len(zs) - 2:
+                        shift_n = math.floor(z / (len(zs) - 1))
+                        z -= shift_n * (len(zs) - 1)
+                        shifts[2] = shift_n * zs[-1]
+                    else:
+                        shifts[2] = 0
+
+                    # Find the corresponding subvoxel in the simulated voxel
+                    sv = int(x * n_sv[1] * n_sv[2] + y * n_sv[2] + z)
+
+                    for i in range(3):  # Move walker to the simulated voxel
+                        temp_r0[i] = r0[i] - shifts[i]
+
+                    # Loop over the triangles in this subvoxel
+                    for i in range(subvoxel_indices[sv, 0], subvoxel_indices[sv, 1]):
+                        _cuda_get_triangle(
+                            triangle_indices[i], vertices, faces, triangle
+                        )
+                        d = _cuda_ray_triangle_intersection_check(
+                            triangle, temp_r0, step
+                        )
+                        if d > 0 and d < min_d:
+                            closest_triangle_index = triangle_indices[i]
+                            min_d = d
+
+        # Check if step intersects with the closest triangle
+        if min_d < step_l:
+            _cuda_get_triangle(closest_triangle_index, vertices, faces, triangle)
+            _cuda_triangle_normal(triangle, normal)
+            _cuda_reflection(r0, step, min_d, normal, epsilon)
+            step_l -= min_d
+        else:
+            check_intersection = False
+
+    if iter_idx >= max_iter:
+        iter_exc[thread_id] = True
+    for i in range(3):
+        positions[thread_id, i] = r0[i] + step[i] * step_l
+
+    return 
+
+def flow_simulation(
+    n_walkers,
+    substrate, 
+    traj_file, 
+    vdir, 
+    vloc, 
+    seed=123,
+    cuda_bs=128, 
+    max_iter = int(1e3), 
+    epsilon=1e-13,
+):
+
+    positions = _fill_mesh(n_walkers, substrate, True, seed)
+    _write_traj(traj_file, "w", positions)
+
+
+    bs = cuda_bs  # Threads per block
+    gs = int(math.ceil(float(n_walkers) / bs))  # Blocks per grid
+    stream = cuda.stream()
+
+    d_iter_exc = cuda.to_device(np.zeros(n_walkers).astype(bool))
+    vdir_index = []
+    for i in range(len(positions)):
+        dis = vloc - positions[i]
+        dis = np.linalg.norm(dis, axis=1)
+        vdir_index.append(np.where(dis==np.amin(np.abs(dis)))[0][0])
+
+    vdir = vdir[vdir_index]
+    d_positions = cuda.to_device(positions, stream=stream)
+    d_vdir = cuda.to_device(vdir, stream=stream)
+    d_vertices = cuda.to_device(substrate.vertices, stream=stream)
+    d_faces = cuda.to_device(substrate.faces, stream=stream)
+    d_xs = cuda.to_device(substrate.xs, stream=stream)
+    d_ys = cuda.to_device(substrate.ys, stream=stream)
+    d_zs = cuda.to_device(substrate.zs, stream=stream)
+    d_triangle_indices = cuda.to_device(substrate.triangle_indices, stream=stream)
+    d_subvoxel_indices = cuda.to_device(substrate.subvoxel_indices, stream=stream)
+    d_n_sv = cuda.to_device(substrate.n_sv, stream=stream)
+
+    _cuda_flow_mesh[gs, bs, stream](
+        d_positions,
+        FLOW_STEP, 
+        d_vertices, 
+        d_faces, 
+        d_xs, 
+        d_ys, 
+        d_zs, 
+        d_subvoxel_indices, 
+        d_triangle_indices, 
+        d_iter_exc, 
+        max_iter, 
+        d_n_sv, 
+        epsilon, 
+        d_vdir)
+    stream.synchronize()
+    positions = d_positions.copy_to_host(stream=stream)
+    print("Finished calculating initial positions")
+    _write_traj(traj_file, "a", positions)
+
+    return 
+
 
 
 @cuda.jit()
