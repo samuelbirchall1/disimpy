@@ -21,7 +21,7 @@ from gradients import GAMMA
 #from . import utils, substrates
 #from .gradients import GAMMA
 
-FLOW_STEP = 1e-5
+FLOW_STEP = 1e-6
 
 @cuda.jit(device=True)
 def _cuda_dot_product(a, b):
@@ -961,69 +961,6 @@ def _cuda_flow_mesh(
 
     return 
 
-def flow_simulation(
-    n_walkers,
-    substrate, 
-    traj_file, 
-    vdir, 
-    vloc, 
-    seed=123,
-    cuda_bs=128, 
-    max_iter = int(1e3), 
-    epsilon=1e-13,
-):
-
-    positions = _fill_mesh(n_walkers, substrate, True, seed)
-    _write_traj(traj_file, "w", positions)
-
-
-    bs = cuda_bs  # Threads per block
-    gs = int(math.ceil(float(n_walkers) / bs))  # Blocks per grid
-    stream = cuda.stream()
-
-    d_iter_exc = cuda.to_device(np.zeros(n_walkers).astype(bool))
-    vdir_index = []
-    for i in range(len(positions)):
-        dis = vloc - positions[i]
-        dis = np.linalg.norm(dis, axis=1)
-        vdir_index.append(np.where(dis==np.amin(np.abs(dis)))[0][0])
-
-    vdir = vdir[vdir_index]
-    d_positions = cuda.to_device(positions, stream=stream)
-    d_vdir = cuda.to_device(vdir, stream=stream)
-    d_vertices = cuda.to_device(substrate.vertices, stream=stream)
-    d_faces = cuda.to_device(substrate.faces, stream=stream)
-    d_xs = cuda.to_device(substrate.xs, stream=stream)
-    d_ys = cuda.to_device(substrate.ys, stream=stream)
-    d_zs = cuda.to_device(substrate.zs, stream=stream)
-    d_triangle_indices = cuda.to_device(substrate.triangle_indices, stream=stream)
-    d_subvoxel_indices = cuda.to_device(substrate.subvoxel_indices, stream=stream)
-    d_n_sv = cuda.to_device(substrate.n_sv, stream=stream)
-
-    _cuda_flow_mesh[gs, bs, stream](
-        d_positions,
-        FLOW_STEP, 
-        d_vertices, 
-        d_faces, 
-        d_xs, 
-        d_ys, 
-        d_zs, 
-        d_subvoxel_indices, 
-        d_triangle_indices, 
-        d_iter_exc, 
-        max_iter, 
-        d_n_sv, 
-        epsilon, 
-        d_vdir)
-    stream.synchronize()
-    positions = d_positions.copy_to_host(stream=stream)
-    print("Finished calculating initial positions")
-    _write_traj(traj_file, "a", positions)
-
-    return 
-
-
-
 @cuda.jit()
 def _cuda_step_mesh(
     positions,
@@ -1561,3 +1498,70 @@ def simulation(
         return signals, positions
     else:
         return signals
+
+def flow_simulation(
+    n_walkers,
+    gradient, 
+    substrate,
+    traj_file, 
+    vdir, 
+    vloc, 
+    seed=123,
+    cuda_bs=128, 
+    max_iter=int(1e3), 
+    epsilon=1e-13,
+):
+
+    positions = _fill_mesh(n_walkers, substrate, True, seed)
+    _write_traj(traj_file, "w", positions)
+    print("Finished calculating initial positions")
+
+    bs = cuda_bs  # Threads per block
+    gs = int(math.ceil(float(n_walkers) / bs))  # Blocks per grid
+    stream = cuda.stream()
+
+    d_iter_exc = cuda.to_device(np.zeros(n_walkers).astype(bool))
+    
+    d_positions = cuda.to_device(positions, stream=stream)
+    d_vertices = cuda.to_device(substrate.vertices, stream=stream)
+    d_faces = cuda.to_device(substrate.faces, stream=stream)
+    d_xs = cuda.to_device(substrate.xs, stream=stream)
+    d_ys = cuda.to_device(substrate.ys, stream=stream)
+    d_zs = cuda.to_device(substrate.zs, stream=stream)
+    d_triangle_indices = cuda.to_device(substrate.triangle_indices, stream=stream)
+    d_subvoxel_indices = cuda.to_device(substrate.subvoxel_indices, stream=stream)
+    d_n_sv = cuda.to_device(substrate.n_sv, stream=stream)
+
+    for t in range(6):
+        #Nearest Neighbour Algorithm 
+        vdir_index = []
+        for i in range(len(positions)):
+            dis = vloc - positions[i]
+            dis = np.linalg.norm(dis, axis=1)
+            vdir_index.append(np.where(dis==np.amin(np.abs(dis)))[0][0])
+        vdir = vdir[vdir_index]
+        d_vdir = cuda.to_device(vdir, stream=stream)
+        _cuda_flow_mesh[gs, bs, stream](
+            d_positions,
+            FLOW_STEP, 
+            d_vertices, 
+            d_faces, 
+            d_xs, 
+            d_ys, 
+            d_zs, 
+            d_subvoxel_indices, 
+            d_triangle_indices, 
+            d_iter_exc, 
+            max_iter, 
+            d_n_sv, 
+            epsilon, 
+            d_vdir
+        )
+        stream.synchronize()
+        time.sleep(1e-2)
+        positions = d_positions.copy_to_host(stream=stream)
+        _write_traj(traj_file, "a", positions)
+    
+    
+
+    return 
