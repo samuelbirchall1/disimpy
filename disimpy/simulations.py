@@ -1539,8 +1539,8 @@ def flow_simulation(
             dis = vloc - positions[i]
             dis = np.linalg.norm(dis, axis=1)
             vdir_index.append(np.where(dis==np.amin(np.abs(dis)))[0][0])
-        vdir = vdir[vdir_index]
-        d_vdir = cuda.to_device(vdir, stream=stream)
+        vdir_new = vdir[vdir_index]
+        d_vdir = cuda.to_device(vdir_new, stream=stream)
         _cuda_flow_mesh[gs, bs, stream](
             d_positions,
             FLOW_STEP, 
