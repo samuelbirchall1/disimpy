@@ -18,6 +18,8 @@ from numba.cuda.random import (
 
 import utils, substrates
 from gradients import GAMMA
+from scipy.spatial import kdtree
+
 #from . import utils, substrates
 #from .gradients import GAMMA
 
@@ -1520,6 +1522,7 @@ def flow_simulation(
     gs = int(math.ceil(float(n_walkers) / bs))  # Blocks per grid
     stream = cuda.stream()
 
+    # Move arrays to CUDA GPU
     d_iter_exc = cuda.to_device(np.zeros(n_walkers).astype(bool))
     
     d_positions = cuda.to_device(positions, stream=stream)
@@ -1532,13 +1535,13 @@ def flow_simulation(
     d_subvoxel_indices = cuda.to_device(substrate.subvoxel_indices, stream=stream)
     d_n_sv = cuda.to_device(substrate.n_sv, stream=stream)
 
-    for t in range(6):
+    #Build tree for nearest neighbour algorithm 
+    tree = kdtree(vloc)
+    for t in range(gradient.shape[1]):
         #Nearest Neighbour Algorithm 
         vdir_index = []
         for i in range(len(positions)):
-            dis = vloc - positions[i]
-            dis = np.linalg.norm(dis, axis=1)
-            vdir_index.append(np.where(dis==np.amin(np.abs(dis)))[0][0])
+            vdir_index.append(tree.query(positions[i])[1])
         vdir_new = vdir[vdir_index]
         d_vdir = cuda.to_device(vdir_new, stream=stream)
         _cuda_flow_mesh[gs, bs, stream](
