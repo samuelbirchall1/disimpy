@@ -18,8 +18,7 @@ from numba.cuda.random import (
 
 import utils, substrates
 from gradients import GAMMA
-from scipy.spatial import kdtree
-
+from scipy import spatial
 #from . import utils, substrates
 #from .gradients import GAMMA
 
@@ -1536,7 +1535,7 @@ def flow_simulation(
     d_n_sv = cuda.to_device(substrate.n_sv, stream=stream)
 
     #Build tree for nearest neighbour algorithm 
-    tree = kdtree(vloc)
+    tree = spatial.KDtree(vloc)
     for t in range(gradient.shape[1]):
         #Nearest Neighbour Algorithm 
         vdir_index = []
@@ -1564,7 +1563,5 @@ def flow_simulation(
         time.sleep(1e-2)
         positions = d_positions.copy_to_host(stream=stream)
         _write_traj(traj_file, "a", positions)
-    
-    
 
     return 
