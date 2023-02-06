@@ -1535,7 +1535,7 @@ def flow_simulation(
     d_n_sv = cuda.to_device(substrate.n_sv, stream=stream)
 
     #Build tree for nearest neighbour algorithm 
-    tree = spatial.KDtree(vloc)
+    tree = spatial.KDTree(vloc)
     for t in range(gradient.shape[1]):
         #Nearest Neighbour Algorithm 
         vdir_index = []
