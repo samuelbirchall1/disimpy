@@ -22,8 +22,6 @@ from scipy import spatial
 #from . import utils, substrates
 #from .gradients import GAMMA
 
-FLOW_STEP = 1e-6
-
 @cuda.jit(device=True)
 def _cuda_dot_product(a, b):
     """Calculate the dot product between two 1D arrays of length 3.
@@ -850,7 +848,13 @@ def _cuda_step_ellipsoid(
 @cuda.jit()
 def _cuda_flow_mesh(
     positions, 
+    g_x,
+    g_y,
+    g_z,
+    phases,
+    t,
     step_l,
+    dt, 
     vertices,
     faces,
     xs,
@@ -865,13 +869,14 @@ def _cuda_flow_mesh(
     vdir,
 ):
     
-    """
-    Kernel Function for flow in vascular mesh
-    """
+    """Kernel Function for flow in a triangular mesh"""
+    
 
     thread_id = cuda.grid(1)
     if thread_id >= positions.shape[0]:
         return 
+
+    #Allocate memory
     step = cuda.local.array(3, numba.float64)
     lls = cuda.local.array(3, numba.int64)
     uls = cuda.local.array(3, numba.int64)
@@ -880,8 +885,10 @@ def _cuda_flow_mesh(
     shifts = cuda.local.array(3, numba.float64)
     temp_r0 = cuda.local.array(3, numba.float64)
 
+    #Set initial positions and step 
     r0 = positions[thread_id, :]
     step = vdir[thread_id, :]
+
     # Check for intersection, reflect step, and repeat until no intersection
     check_intersection = True
     iter_idx = 0
@@ -959,7 +966,16 @@ def _cuda_flow_mesh(
         iter_exc[thread_id] = True
     for i in range(3):
         positions[thread_id, i] = r0[i] + step[i] * step_l
-
+    for m in range(g_x.shape[0]):
+        phases[m, thread_id] += (
+            GAMMA
+            * dt
+            * (
+                (g_x[m, t] * positions[thread_id, 0])
+                + (g_y[m, t] * positions[thread_id, 1])
+                + (g_z[m, t] * positions[thread_id, 2])
+            )
+        )
     return 
 
 @cuda.jit()
@@ -1502,7 +1518,9 @@ def simulation(
 
 def flow_simulation(
     n_walkers,
+    flow_step,
     gradient, 
+    dt,
     substrate,
     traj_file, 
     vdir, 
@@ -1522,6 +1540,10 @@ def flow_simulation(
     stream = cuda.stream()
 
     # Move arrays to CUDA GPU
+    d_g_x = cuda.to_device(np.ascontiguousarray(gradient[:, :, 0]), stream=stream)
+    d_g_y = cuda.to_device(np.ascontiguousarray(gradient[:, :, 1]), stream=stream)
+    d_g_z = cuda.to_device(np.ascontiguousarray(gradient[:, :, 2]), stream=stream)
+    d_phases = cuda.to_device(np.zeros((gradient.shape[0], n_walkers)), stream=stream)
     d_iter_exc = cuda.to_device(np.zeros(n_walkers).astype(bool))
     
     d_positions = cuda.to_device(positions, stream=stream)
@@ -1545,7 +1567,13 @@ def flow_simulation(
         d_vdir = cuda.to_device(vdir_new, stream=stream)
         _cuda_flow_mesh[gs, bs, stream](
             d_positions,
-            FLOW_STEP, 
+            d_g_x, 
+            d_g_y,
+            d_g_z,
+            t,
+            d_phases,
+            dt, 
+            flow_step, 
             d_vertices, 
             d_faces, 
             d_xs, 
@@ -1559,9 +1587,15 @@ def flow_simulation(
             epsilon, 
             d_vdir
         )
+    
         stream.synchronize()
         time.sleep(1e-2)
         positions = d_positions.copy_to_host(stream=stream)
         _write_traj(traj_file, "a", positions)
 
-    return 
+    #Get signals
+    iter_exc = d_iter_exc.copy_to_host(stream=stream)
+    phases = d_phases.copy_to_host(stream=stream)
+    phases[:, np.where(iter_exc)[0]] = np.nan
+    signals = np.real(np.nansum(np.exp(1j * phases), axis=1))
+    return signals 
