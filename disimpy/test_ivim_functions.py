@@ -18,6 +18,7 @@ from numba.cuda.random import (
 import gradients, simulations, substrates, utils
 
 
+
 SEED = 123
 
 def get_variables(
@@ -44,7 +45,7 @@ def get_variables(
 
     return vloc, vdir, seg_length
 
-def test_get_nearest_velocity_direction():
+def test_flow_simulation():
     @cuda.jit()
     def test_kernel(positions, vdir, step_l):
         thread_id = cuda.grid(1)
@@ -117,4 +118,57 @@ def test_get_nearest_velocity_direction():
     positions = d_positions.copy_to_host(stream=stream)
     print("Finished calculating initial positions")
     simulations._write_traj(traj_file, "a", positions)
-    
+
+def test_number_of_steps():
+    mesh = meshio.read("/content/drive/MyDrive/mresprojectbits/vascular_mesh_22-10-04_21-52-57_r4.ply")
+    vertices = mesh.points.astype(np.float32)*1e-6
+    faces = mesh.cells[0].data
+
+    #load velocity directions and shift to origin
+    vdir = np.load("/content/drive/MyDrive/mresprojectbits/velocity_direction.npy")
+    vloc = np.load("/content/drive/MyDrive/mresprojectbits/velocity_location.npy")
+    vloc = vloc*1e-6
+    padding=np.zeros(3)
+    shift = -np.min(vertices, axis=0) + padding
+    vdir = vdir + shift
+    vloc = vloc + shift 
+    mag = np.linalg.norm(vdir, axis=1)
+    mag = mag[:, np.newaxis]
+    vdir = np.divide(vdir, mag)
+
+    substrate = substrates.mesh(
+        vertices,
+        faces,
+        periodic=True)
+
+    n_walkers = 100
+    traj_file = "IVIM_tests.txt"
+    flow_velocity = 0.0030
+    gradient = np.zeros((1, 100, 3))
+    gradient[0, 1:30, 0] = 1
+    gradient[0, 70:99, 0] = -1
+    T = 80e-3 
+    n_t = int(1e2)
+    dt = T / (gradient.shape[1] - 1)
+    gradient, dt = gradients.interpolate_gradient(gradient, dt, n_t)
+
+    bs = np.linspace(0, 3e9, 50)
+    gradient = np.concatenate([gradient for _ in bs], axis=0)
+    gradient = gradients.set_b(gradient, dt, bs)
+
+    #Calculate flow velocity 
+    flow_length = dt*flow_velocity
+
+    signals = simulations.flow_simulation(
+        n_walkers, 
+        flow_length, 
+        gradient, 
+        dt, 
+        substrate, 
+        traj_file, 
+        vdir, 
+        vloc, 
+    )
+    trajectories = np.loadtxt(traj_file)
+    print(trajectories.shape)
+    return 
