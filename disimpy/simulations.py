@@ -1602,7 +1602,7 @@ def flow_simulation(
 
     #Obtain signal 
     signals = np.zeros(phases.shape)
-    for i in range(phases.shape[2])
+    for i in range(phases.shape[2]):
         phases[:, np.where(iter_exc)[0], i] = np.nan
         signals[..., i] = np.real(np.nansum(np.exp(1j * phases[..., i]), axis=1))
     
