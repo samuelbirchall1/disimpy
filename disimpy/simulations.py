@@ -966,16 +966,17 @@ def _cuda_flow_mesh(
         iter_exc[thread_id] = True
     for i in range(3):
         positions[thread_id, i] = r0[i] + step[i] * step_l
-    for m in range(g_x.shape[0]):
-        phases[m, thread_id] += (
-            GAMMA
-            * dt
-            * (
-                (g_x[m, t] * positions[thread_id, 0])
-                + (g_y[m, t] * positions[thread_id, 1])
-                + (g_z[m, t] * positions[thread_id, 2])
+    for n in range(g_x.shape[2]):
+        for m in range(g_x.shape[0]):
+            phases[m, thread_id, n] += (
+                GAMMA
+                * dt
+                * (
+                    (g_x[m, t, n] * positions[thread_id, 0])
+                    + (g_y[m, t, n] * positions[thread_id, 1])
+                    + (g_z[m, t, n] * positions[thread_id, 2])
+                )
             )
-        )
     return 
 
 @cuda.jit()
@@ -1529,6 +1530,9 @@ def flow_simulation(
     cuda_bs=128, 
     max_iter=int(1e3), 
     epsilon=1e-13,
+    all_signals = False, 
+    final_pos = False, 
+    quiet = False
 ):
 
     positions = _fill_mesh(n_walkers, substrate, True, seed)
@@ -1540,10 +1544,10 @@ def flow_simulation(
     stream = cuda.stream()
 
     # Move arrays to CUDA GPU
-    d_g_x = cuda.to_device(np.ascontiguousarray(gradient[:, :, 0]), stream=stream)
-    d_g_y = cuda.to_device(np.ascontiguousarray(gradient[:, :, 1]), stream=stream)
-    d_g_z = cuda.to_device(np.ascontiguousarray(gradient[:, :, 2]), stream=stream)
-    d_phases = cuda.to_device(np.zeros((gradient.shape[0], n_walkers)), stream=stream)
+    d_g_x = cuda.to_device(np.ascontiguousarray(gradient[:, :, 0, :]), stream=stream)
+    d_g_y = cuda.to_device(np.ascontiguousarray(gradient[:, :, 1, :]), stream=stream)
+    d_g_z = cuda.to_device(np.ascontiguousarray(gradient[:, :, 2, :]), stream=stream)
+    d_phases = cuda.to_device(np.zeros((gradient.shape[0], n_walkers, gradient.shape[3])), stream=stream)
     d_iter_exc = cuda.to_device(np.zeros(n_walkers).astype(bool))
     
     d_positions = cuda.to_device(positions, stream=stream)
@@ -1562,7 +1566,7 @@ def flow_simulation(
         #Nearest Neighbour Algorithm 
         vdir_index = []
         for i in range(len(positions)):
-            vdir_index.append(tree.query(positions[i])[1])
+            vdir_index.append(tree.query(positions[i])[1]) #return index of nearest neighbour
         vdir_new = vdir[vdir_index]
         d_vdir = cuda.to_device(vdir_new, stream=stream)
         _cuda_flow_mesh[gs, bs, stream](
@@ -1593,9 +1597,14 @@ def flow_simulation(
         positions = d_positions.copy_to_host(stream=stream)
         _write_traj(traj_file, "a", positions)
 
-    #Get signals
     iter_exc = d_iter_exc.copy_to_host(stream=stream)
     phases = d_phases.copy_to_host(stream=stream)
-    phases[:, np.where(iter_exc)[0]] = np.nan
-    signals = np.real(np.nansum(np.exp(1j * phases), axis=1))
-    return signals 
+
+    #Obtain signal 
+    signals = np.zeros(phases.shape)
+    for i in range(phases.shape[2])
+        phases[:, np.where(iter_exc)[0], i] = np.nan
+        signals[..., i] = np.real(np.nansum(np.exp(1j * phases[..., i]), axis=1))
+    
+
+return signals
