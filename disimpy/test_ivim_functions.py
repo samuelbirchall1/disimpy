@@ -10,6 +10,7 @@ import numpy as np
 from numba import cuda
 import numpy.testing as npt
 from scipy.stats import normaltest, kstest
+from scipy import spatial
 from numba.cuda.random import (
     create_xoroshiro128p_states,
     xoroshiro128p_normal_float64,
@@ -119,7 +120,7 @@ def test_flow_simulation():
     print("Finished calculating initial positions")
     simulations._write_traj(traj_file, "a", positions)
 
-def test_number_of_steps():
+def colab_test_number_of_steps():
     mesh = meshio.read("/content/drive/MyDrive/mresprojectbits/vascular_mesh_22-10-04_21-52-57_r4.ply")
     vertices = mesh.points.astype(np.float32)*1e-6
     faces = mesh.cells[0].data
@@ -148,7 +149,7 @@ def test_number_of_steps():
     gradient[0, 1:30, 0] = 1
     gradient[0, 70:99, 0] = -1
     T = 80e-3 
-    n_t = int(1e2)
+    n_t = int(1e3)
     dt = T / (gradient.shape[1] - 1)
     gradient, dt = gradients.interpolate_gradient(gradient, dt, n_t)
 
@@ -170,5 +171,11 @@ def test_number_of_steps():
         vloc, 
     )
     trajectories = np.loadtxt(traj_file)
-    print(trajectories.shape)
-    return 
+    trajectories = trajectories.reshape(
+        (trajectories.shape[0], int(trajectories.shape[1] / 3), 3)
+    )
+    dis = np.zeros((trajectories.shape[0]-1, trajectories.shape[1]))
+    for t in range(trajectories.shape[0]-1):
+      for i in range(trajectories.shape[1]):
+        dis[t, i] = np.linalg.norm((trajectories[t+1, i] - trajectories[t, i]))
+    return dis
