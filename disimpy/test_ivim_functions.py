@@ -20,7 +20,7 @@ import gradients, simulations, substrates, utils
 
 
 
-SEED = 123
+SEED = 123 
 
 def get_variables(
     path, 
