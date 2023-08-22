@@ -220,7 +220,7 @@ def create_gradient(delta, DELTA, bs, n_t, rs):
   for i in range(gradient.shape[3]): #number of gradient directions
     gradient_new = gradient[..., i]
     gradient_new = np.concatenate([gradient_new for _ in bs], axis=0)
-    gradient_new = set_b(gradient_new, dt, bs)
+    gradient_new = set_b(gradient_new, dt, bs, SGP=False)
     gradient_final[..., i] = gradient_new #new gradients with new b-values
   return gradient_final, dt, delta/dt
 
