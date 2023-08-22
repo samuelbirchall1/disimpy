@@ -22,6 +22,12 @@ from scipy import spatial
 #from . import utils, substrates
 #from .gradients import GAMMA
 
+
+def _generate_gaussian_velocities(mean_vel, n_walkers):
+
+    return np.random.normal(loc=mean_vel, size=(n_walkers))
+
+
 @cuda.jit(device=True)
 def _cuda_dot_product(a, b):
     """Calculate the dot product between two 1D arrays of length 3.
@@ -845,16 +851,17 @@ def _cuda_step_ellipsoid(
     return
 
 
+
 @cuda.jit()
 def _cuda_flow_mesh(
-    positions, 
+    positions,
     g_x,
     g_y,
     g_z,
-    phases, 
+    phases,
     t,
     step_l,
-    dt, 
+    dt,
     vertices,
     faces,
     xs,
@@ -868,26 +875,27 @@ def _cuda_flow_mesh(
     epsilon,
     vdir,
 ):
-    
+
     """Kernel Function for flow in a triangular mesh"""
-    
+
 
     thread_id = cuda.grid(1)
     if thread_id >= positions.shape[0]:
-        return 
+        return
 
     #Allocate memory
-    step = cuda.local.array(3, numba.float64)
-    lls = cuda.local.array(3, numba.int64)
-    uls = cuda.local.array(3, numba.int64)
-    triangle = cuda.local.array((3, 3), numba.float64)
-    normal = cuda.local.array(3, numba.float64)
-    shifts = cuda.local.array(3, numba.float64)
-    temp_r0 = cuda.local.array(3, numba.float64)
+    #step = cuda.local.array(3, numba.float32)
+    lls = cuda.local.array(3, numba.int32)
+    uls = cuda.local.array(3, numba.int32)
+    triangle = cuda.local.array((3, 3), numba.float32)
+    normal = cuda.local.array(3, numba.float32)
+    shifts = cuda.local.array(3, numba.float32)
+    temp_r0 = cuda.local.array(3, numba.float32)
 
-    #Set initial positions and step 
+    #Set initial positions and step
     r0 = positions[thread_id, :]
     step = vdir[thread_id, :]
+
 
     # Check for intersection, reflect step, and repeat until no intersection
     check_intersection = True
@@ -964,20 +972,20 @@ def _cuda_flow_mesh(
 
     if iter_idx >= max_iter:
         iter_exc[thread_id] = True
-    for i in range(3):
+    for i in range(3): #update positions
         positions[thread_id, i] = r0[i] + step[i] * step_l
-    for n in range(g_x.shape[2]):
-        for m in range(g_x.shape[0]):
-            phases[m, thread_id, n] += (
-                GAMMA
-                * dt
-                * (
-                    (g_x[m, t, n] * positions[thread_id, 0])
-                    + (g_y[m, t, n] * positions[thread_id, 1])
-                    + (g_z[m, t, n] * positions[thread_id, 2])
-                )
-            )
-    return 
+    for n in range(g_x.shape[2]): #number of gradient directions
+      for m in range(g_x.shape[0]): #number of b-values
+          phases[m, thread_id, n] += (
+              GAMMA
+              * dt
+              * (
+                  (g_x[m, t, n] * positions[thread_id, 0])
+                  + (g_y[m, t, n] * positions[thread_id, 1])
+                  + (g_z[m, t, n] * positions[thread_id, 2])
+              )
+          )
+    return
 
 @cuda.jit()
 def _cuda_step_mesh(
@@ -1520,23 +1528,24 @@ def simulation(
 def flow_simulation(
     n_walkers,
     flow_step,
-    gradient, 
+    gradient,
     dt,
     substrate,
-    traj_file, 
-    vdir, 
-    vloc, 
+    traj_file,
+    vdir,
+    vloc,
     seed=123,
-    cuda_bs=128, 
-    max_iter=int(1e3), 
+    cuda_bs=128,
+    max_iter=int(1e3),
     epsilon=1e-13,
-    all_signals = False, 
-    final_pos = False, 
+    all_signals = False,
+    final_pos = False,
     quiet = False
 ):
 
-    positions = _fill_mesh(n_walkers, substrate, True, seed)
-    _write_traj(traj_file, "w", positions)
+    positions1 = _fill_mesh(n_walkers, substrate, True, seed)
+    positions = positions1
+    #simulations._write_traj(traj_file, "w", positions)
     print("Finished calculating initial positions")
 
     bs = cuda_bs  # Threads per block
@@ -1549,7 +1558,7 @@ def flow_simulation(
     d_g_z = cuda.to_device(np.ascontiguousarray(gradient[:, :, 2, :]), stream=stream)
     d_phases = cuda.to_device(np.zeros((gradient.shape[0], n_walkers, gradient.shape[3])), stream=stream)
     d_iter_exc = cuda.to_device(np.zeros(n_walkers).astype(bool))
-    
+
     d_positions = cuda.to_device(positions, stream=stream)
     d_vertices = cuda.to_device(substrate.vertices, stream=stream)
     d_faces = cuda.to_device(substrate.faces, stream=stream)
@@ -1560,50 +1569,65 @@ def flow_simulation(
     d_subvoxel_indices = cuda.to_device(substrate.subvoxel_indices, stream=stream)
     d_n_sv = cuda.to_device(substrate.n_sv, stream=stream)
 
-    #Build tree for nearest neighbour algorithm 
+    #Build tree for nearest neighbour algorithm
     tree = spatial.KDTree(vloc)
+    #phase_list = []
+    dis_list = []
+    step = 0
+    #dis1 = 0
+    position_list = []
     for t in range(gradient.shape[1]):
-        #Nearest Neighbour Algorithm 
-        vdir_index = []
-        for i in range(len(positions)):
-            vdir_index.append(tree.query(positions[i])[1]) #return index of nearest neighbour
-        vdir_new = vdir[vdir_index]
+        #Nearest Neighbour Algorithm
+        vdir_index = tree.query(positions, workers=-1)[1] #return index of nearest neighbour
+        vdir_new = vdir[vdir_index] #
         d_vdir = cuda.to_device(vdir_new, stream=stream)
+
+        if (step % 20) == 0:
+        #For calculating mean displacement
+          dis = np.linalg.norm(positions - positions1, axis=1)
+          dis_list.append(dis)
         _cuda_flow_mesh[gs, bs, stream](
             d_positions,
-            d_g_x, 
+            d_g_x,
             d_g_y,
             d_g_z,
-            d_phases, 
+            d_phases,
             t,
-            flow_step, 
+            flow_step,
             dt,
-            d_vertices, 
-            d_faces, 
-            d_xs, 
-            d_ys, 
-            d_zs, 
-            d_subvoxel_indices, 
-            d_triangle_indices, 
-            d_iter_exc, 
-            max_iter, 
-            d_n_sv, 
-            epsilon, 
-            d_vdir
+            d_vertices,
+            d_faces,
+            d_xs,
+            d_ys,
+            d_zs,
+            d_subvoxel_indices,
+            d_triangle_indices,
+            d_iter_exc,
+            max_iter,
+            d_n_sv,
+            epsilon,
+            d_vdir,
         )
-    
+
         stream.synchronize()
         time.sleep(1e-2)
         positions = d_positions.copy_to_host(stream=stream)
-        _write_traj(traj_file, "a", positions)
+
+        position_list.append(positions)
+        step +=1
+
+
 
     iter_exc = d_iter_exc.copy_to_host(stream=stream)
     phases = d_phases.copy_to_host(stream=stream)
 
-    #Obtain signal 
+
+
+    #Obtain signal
     signals = []
+
     for i in range(phases.shape[2]):
         phases_new = phases[..., i]
         phases_new[:, np.where(iter_exc)[0]] = np.nan
-        signals.append(np.abs(np.nansum(np.exp(1j * phases_new), axis=1)))
-    return signals
+        signals.append(np.nansum(np.exp(1j * phases_new), axis=1))
+    return signals, position_list, dis_list
