@@ -120,7 +120,7 @@ def set_b(gradient, dt, b, SGP=False):
     """
     b = np.asarray(b)
 
-    if np.any(np.isclose(calc_b(gradient, dt), 0)):
+    if np.any(np.isclose(calc_b(gradient, dt, SGP), 0)):
         raise Exception("b-value can not be changed for measurements with b = 0")
     ratio = b / calc_b(gradient, dt, SGP)
     scaled_g = gradient * np.sqrt(ratio)[:, np.newaxis, np.newaxis]
